@@ -1,0 +1,8 @@
+[Unit]
+Description=Nextcloud Pull (rclone sync) for %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nc_pull %i

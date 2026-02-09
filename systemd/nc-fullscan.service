@@ -1,0 +1,6 @@
+[Unit]
+Description=Daily ClamAV full scan of NAS data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nc_fullscan

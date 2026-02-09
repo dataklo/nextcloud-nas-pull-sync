@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ! -f /etc/nc-sync/config.env ]]; then
+  echo "Missing /etc/nc-sync/config.env" >&2
+  exit 2
+fi
+# shellcheck disable=SC1091
+source /etc/nc-sync/config.env
+
+TG_SEND="/usr/local/bin/tg_send"
+SCANROOT="${DATA_DIR:-/mnt/nas/daten}"
+QBASE="${QUAR_DIR:-/mnt/nas/quarantine}"
+DATE="$(date +%F)"
+LOGDIR="/var/log/nc-sync"
+mkdir -p "$LOGDIR" "${QBASE}/${DATE}"
+
+OUT="${LOGDIR}/clamav-${DATE}.log"
+INF="${LOGDIR}/clamav-${DATE}.infected.txt"
+
+# RC: 0=clean,1=infected,2=error
+set +e
+clamdscan --fdpass -r --infected --no-summary "$SCANROOT" > "$OUT"
+RC=$?
+set -e
+
+if [[ $RC -eq 2 ]]; then
+  "$TG_SEND" "❌ ClamAV Scan FEHLER (Exit 2)\n$(tail -n 30 "$OUT")" || true
+  exit 2
+fi
+
+grep -F " FOUND" "$OUT" | sed 's/: .* FOUND$//' > "$INF" || true
+
+if [[ -s "$INF" ]]; then
+  while IFS= read -r f; do
+    rel="${f#${SCANROOT}/}"
+    dest="${QBASE}/${DATE}/${rel}"
+    mkdir -p "$(dirname "$dest")"
+    [[ -f "$f" ]] && mv -f "$f" "$dest" || true
+  done < "$INF"
+
+  "$TG_SEND" "🦠 ClamAV: INFIZIERTE DATEIEN GEFUNDEN\nQuarantäne: ${QBASE}/${DATE}\nBeispiele:\n$(tail -n 20 "$INF")" || true
+fi
+
+exit 0

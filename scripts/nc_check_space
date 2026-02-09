@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ! -f /etc/nc-sync/config.env ]]; then
+  echo "Missing /etc/nc-sync/config.env" >&2
+  exit 2
+fi
+# shellcheck disable=SC1091
+source /etc/nc-sync/config.env
+
+TG_SEND="/usr/local/bin/tg_send"
+CHECK_PATH="${NAS_MOUNT:-/mnt/nas}"
+MIN_FREE_GIB="${MIN_FREE_GIB:-20}"
+MIN_FREE_BYTES=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
+
+# Max. alle 6h warnen
+COOLDOWN_SECONDS=$((6 * 3600))
+STATE_DIR="/var/lib/nc-sync"
+STATE_FILE="${STATE_DIR}/space_alert.state"
+mkdir -p "$STATE_DIR"
+
+free_bytes="$(df -B1 --output=avail "$CHECK_PATH" | tail -n 1 | tr -d ' ')"
+read -r _ _ _ use_pct mountpoint < <(df -B1 --output=size,used,avail,pcent,target "$CHECK_PATH" | tail -n 1)
+
+now="$(date +%s)"
+last=0
+[[ -f "$STATE_FILE" ]] && last="$(cat "$STATE_FILE" 2>/dev/null || echo 0)"
+
+if [[ "$free_bytes" -lt "$MIN_FREE_BYTES" ]]; then
+  if [[ $((now - last)) -ge "$COOLDOWN_SECONDS" ]]; then
+    free_gib=$((free_bytes / 1024 / 1024 / 1024))
+    "$TG_SEND" "⚠️ Speicherwarnung: < ${MIN_FREE_GIB} GiB frei\nPfad: ${CHECK_PATH} (Mount: ${mountpoint})\nFrei: ${free_gib} GiB\nBelegung: ${use_pct}" || true
+    echo "$now" > "$STATE_FILE"
+  fi
+  # 75 = temporary failure (praktisch für systemd)
+  exit 75
+fi
+
+exit 0

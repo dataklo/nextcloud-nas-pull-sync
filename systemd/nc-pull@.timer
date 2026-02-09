@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Nextcloud Pull for %i regularly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

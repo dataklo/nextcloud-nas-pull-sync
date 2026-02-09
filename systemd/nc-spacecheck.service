@@ -1,0 +1,6 @@
+[Unit]
+Description=Check free disk space on NAS and alert via Telegram
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nc_check_space

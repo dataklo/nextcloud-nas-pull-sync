@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+INSTANCE="${1:-}"
+if [[ -z "$INSTANCE" ]]; then
+  echo "Usage: nc_pull <instance>" >&2
+  exit 2
+fi
+
+if [[ ! -f /etc/nc-sync/config.env ]]; then
+  echo "Missing /etc/nc-sync/config.env" >&2
+  exit 2
+fi
+# shellcheck disable=SC1091
+source /etc/nc-sync/config.env
+
+TG_SEND="/usr/local/bin/tg_send"
+LOG_DIR="/var/log/nc-sync"
+STATE_DIR="/var/lib/nc-sync"
+LOCK_DIR="/var/lock"
+mkdir -p "$LOG_DIR" "$STATE_DIR" "$LOCK_DIR"
+
+# Target lookup in SYNC_TARGETS
+REMOTE=""
+DEST=""
+NC_USER=""
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  [[ "$line" =~ ^# ]] && continue
+  IFS='|' read -r inst rem user dest <<<"$line"
+  if [[ "$inst" == "$INSTANCE" ]]; then
+    REMOTE="$rem"
+    NC_USER="$user"
+    DEST="$dest"
+    break
+  fi
+done < <(printf "%s
+" "$SYNC_TARGETS")
+
+if [[ -z "$REMOTE" || -z "$DEST" ]]; then
+  echo "Instance not found in SYNC_TARGETS: $INSTANCE" >&2
+  exit 2
+fi
+
+mkdir -p "$DEST"
+
+# Lock per instance: wenn noch ein Lauf läuft, wird dieser Start übersprungen
+LOCK="$LOCK_DIR/nc-sync-${INSTANCE}.lock"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  exit 0
+fi
+
+# Free space preflight (sends Telegram on threshold)
+if ! /usr/local/bin/nc_check_space; then
+  "$TG_SEND" "⛔ Pull abgebrochen (${INSTANCE}): zu wenig freier Speicher auf ${NAS_MOUNT:-/mnt/nas} (Minimum ${MIN_FREE_GIB:-20} GiB)." || true
+  exit 75
+fi
+
+# Remote reachable?
+set +e
+rclone lsd "${REMOTE}:" --contimeout "${RCLONE_CONTIMEOUT:-15s}" --timeout "2m" >/dev/null 2>&1
+RC_REMOTE=$?
+set -e
+if [[ $RC_REMOTE -ne 0 ]]; then
+  "$TG_SEND" "❌ Nextcloud Remote nicht erreichbar (${INSTANCE})\nRemote: ${REMOTE}:\nExit: ${RC_REMOTE}" || true
+  exit 10
+fi
+
+TS="$(date -Is | tr ':' '-')"
+LOG_JSON="$LOG_DIR/pull-${INSTANCE}-${TS}.json"
+ERR_TSV="$LOG_DIR/pull-${INSTANCE}-${TS}.errors.tsv"
+
+# rclone sync: Cloud -> NAS inkl. Deletes
+set +e
+rclone sync "${REMOTE}:" "${DEST}" \
+  --fast-list \
+  --transfers "${RCLONE_TRANSFERS:-4}" \
+  --checkers "${RCLONE_CHECKERS:-8}" \
+  --retries "${RCLONE_RETRIES:-3}" \
+  --low-level-retries "${RCLONE_LOW_LEVEL_RETRIES:-20}" \
+  --retries-sleep "${RCLONE_RETRIES_SLEEP:-30s}" \
+  --contimeout "${RCLONE_CONTIMEOUT:-15s}" \
+  --timeout "${RCLONE_TIMEOUT:-5m}" \
+  --max-delete "${RCLONE_MAX_DELETE:-2000}" \
+  --log-level INFO --use-json-log --log-file "${LOG_JSON}"
+RC=$?
+set -e
+
+# Fehler extrahieren: Zeit | Objekt(Datei) | Meldung
+jq -r 'select(.level=="error") | [.time, (.object//"-"), .msg] | @tsv' "${LOG_JSON}" > "${ERR_TSV}" 2>/dev/null || true
+
+if [[ -s "${ERR_TSV}" ]]; then
+  "$TG_SEND" "❌ Pull-Fehler (${INSTANCE})\nRemote: ${REMOTE}:\nZeit | Datei | Fehler:\n$(tail -n 20 "${ERR_TSV}")" || true
+fi
+
+if [[ $RC -ne 0 ]]; then
+  "$TG_SEND" "⚠️ Pull-Job Exitcode (${INSTANCE}): ${RC}\nLog: ${LOG_JSON}" || true
+fi
+
+exit $RC

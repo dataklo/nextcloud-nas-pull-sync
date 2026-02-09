@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ! -f /etc/nc-sync/telegram.env ]]; then
+  echo "Missing /etc/nc-sync/telegram.env" >&2
+  exit 2
+fi
+# shellcheck disable=SC1091
+source /etc/nc-sync/telegram.env
+
+msg="${1:-}"
+if [[ -z "$msg" ]]; then
+  echo "No message provided" >&2
+  exit 2
+fi
+
+curl -sS -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+  -d "chat_id=${TG_CHAT_ID}" \
+  --data-urlencode "text=${msg}" \
+  -d "disable_web_page_preview=true" >/dev/null
