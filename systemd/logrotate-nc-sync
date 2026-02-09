@@ -1,0 +1,9 @@
+/var/log/nc-sync/*.json /var/log/nc-sync/*.tsv /var/log/nc-sync/clamav-*.log /var/log/nc-sync/clamav-*.infected.txt {
+  daily
+  rotate 14
+  missingok
+  notifempty
+  compress
+  delaycompress
+  copytruncate
+}

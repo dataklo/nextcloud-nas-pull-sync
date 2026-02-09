@@ -1,144 +1,119 @@
-# nextcloud-nas-pull-sync
+# owncloud-nas-pull-sync
 
-Pull-Synchronisation (Cloud ➜ NAS) für Nextcloud per **rclone (WebDAV)** mit:
+Automatischer **Pull-Sync** von **ownCloud oder Nextcloud** auf ein lokales NAS (NFS/SMB), inkl.:
 
-- **3 Benutzer-Accounts** (konfigurierbar)
-- **Mirror-Verhalten**: Löschungen in der Cloud werden **lokal ebenfalls gelöscht** (`rclone sync`)
-- Ziel auf NAS: **Klartext-Dateien** (sofern keine Nextcloud **E2EE**-Ordner verwendet werden)
-- **ClamAV Daily Fullscan** + **Quarantäne**
-- **Telegram Alerts** bei:
-  - rclone Fehlern (inkl. Dateipfad soweit verfügbar)
-  - Virenfunden (inkl. Dateipfade + Quarantäne-Pfad)
-  - zu wenig freiem Speicher (Standard: **< 20 GiB**) 
-- **systemd Timer** für regelmäßige Jobs
+- **rclone sync (Cloud → NAS)** mit **Deletes** (wenn in der Cloud gelöscht wird, wird lokal auch gelöscht)
+- **3+ Accounts** (beliebig viele) über eine Konfig-Datei
+- **Telegram Alerts** (Sync-Fehler inkl. betroffener Datei, Remote nicht erreichbar, Low Disk Space)
+- **Low Disk Space Alarm** (Default: < 20 GiB frei)
+- **ClamAV** täglicher Vollscan + **Quarantäne** (infizierte Dateien werden verschoben)
+- **systemd Timer** (statt Cron)
+- **Logrotate** für Logs
 
-> Getestet/ausgelegt für **Ubuntu 24.04 minimal** in einer VM.
-
----
-
-## Architektur
-
-```
-Nextcloud (WebDAV)  ->  Ubuntu VM (rclone + ClamAV)  ->  Synology NAS (NFS-Mount)
-```
-
-- Datenfluss ist **Pull**: Cloud ➜ NAS.
-- Lokales NAS ist „Source of Truth“ für nachgelagerte Backups (z.B. Borg in separater VM).
-
----
+> Ziel: Datenfluss **cloud → NAS**. Kein Push zurück.
 
 ## Voraussetzungen
 
-1. **Synology DSM**
-   - NFS aktivieren (NFSv4.1 empfohlen)
-   - Shared Folder (z.B. `nc-sync`) exportieren
-   - NFS-Berechtigung: IP deiner **Ubuntu-VM** erlauben (oder dein /24)
-   - RW erlauben
+- Ubuntu 24.04 minimal (VM oder Bare Metal)
+- NAS ist unter **`/mnt/nas`** gemountet
+  - Daten: **`/mnt/nas/daten`**
+  - Quarantäne: **`/mnt/nas/quarantine`**
+- ownCloud/Nextcloud Zugangsdaten (am besten **App-Passwort**)
+- Telegram Bot Token + Chat ID
 
-2. **Nextcloud**
-   - Pro User ein **App-Passwort** erstellen (Einstellungen → Sicherheit → App-Passwörter)
-   - **Keine E2EE-Ordner** für die Daten, wenn du Klartext auf dem NAS willst.
+## WebDAV URLs (ownCloud / Nextcloud)
 
-3. **Telegram**
-   - Bot via @BotFather erstellen
-   - `TG_TOKEN` + `TG_CHAT_ID` ermitteln (Privatchat oder Gruppe)
+Für ownCloud ist häufig diese URL korrekt:
 
----
+- `https://<HOST>/remote.php/webdav/`
 
-## Repository Inhalt
+Alternativ / je nach Setup funktioniert auch:
 
-- `install.sh`  – installiert Pakete, richtet NFS-Mount, rclone Remotes, systemd Units/Timer, ClamAV, Logrotate ein
-- `update.sh`   – aktualisiert installierte Dateien/Units aus dem Repo-Stand
-- `uninstall.sh` – deaktiviert Timer/Units und entfernt Dateien (optional inkl. Config)
-- `scripts/*` und `systemd/*` – die installierten Komponenten
+- `https://<HOST>/remote.php/dav/files/<USERNAME>/`
 
----
+**Tipp zum Testen (ohne rclone):**
+
+```bash
+curl -u USER:PASS -X PROPFIND "https://<HOST>/remote.php/dav/files/<USER>/" -sS -i | head
+```
 
 ## Quickstart
 
-### 1) Repo klonen
 ```bash
-git clone https://github.com/dataklo/nextcloud-nas-pull-sync.git
-cd nextcloud-nas-pull-sync
+unzip owncloud-nas-pull-sync.zip
+cd owncloud-nas-pull-sync
+sudo ./install.sh
 ```
 
-### 2) Installieren (als root / mit sudo)
-```bash
-sudo bash install.sh
-```
+Der Installer fragt dich interaktiv nach:
 
-Das Setup fragt interaktiv nach:
-- NAS-IP (z.B. `192.168.1.61`)
-- NFS Export Path (z.B. `/volume1/nc-sync`)
-- Mountpoint (Standard: `/mnt/nas`)
-- Telegram Bot Token + Chat-ID
-- Nextcloud Base URL (Standard: `https://cloud.dataklo.de`)
-- Nextcloud Usernames + lokale Zielordner
-- App-Passwörter (werden per `rclone obscure` gespeichert)
+- Telegram Token & Chat ID
+- Mount-Pfad (Default: `/mnt/nas`)
+- Low-Space Threshold (Default: 20 GiB)
+- Accounts (Instance Name, rclone remote, Zielpfad)
+- optional: rclone Remotes anlegen (WebDAV URL, Vendor owncloud/nextcloud, User, App-Passwort)
 
-### 3) Status prüfen
+Danach laufen die Timer automatisch.
+
+### Status prüfen
+
 ```bash
 systemctl list-timers | grep nc-
-
-# Beispiel: letzten Lauf ansehen
-journalctl -u nc-pull@tj-doeren.service -n 100 --no-pager
+systemctl status nc-pull@<instance>.timer
+journalctl -u nc-pull@<instance>.service -n 100 --no-pager
 ```
-
-### 4) Manuell einen Pull starten
-```bash
-sudo systemctl start nc-pull@tj-doeren.service
-```
-
----
-
-## Standard-Timer
-
-- Pull pro User: alle **2 Stunden** (+ Random Delay)
-- Disk Space Check: alle **15 Minuten**
-- ClamAV Fullscan: täglich um **03:15**
-
-Timer können in `/etc/systemd/system/*.timer` angepasst werden.
-
----
 
 ## Konfiguration
 
-Nach Installation liegen Konfigurationen hier:
+### `/etc/nc-sync/accounts.conf`
 
-- `/etc/nc-sync/config.env`  – allgemeine Settings (Mountpoints, Limits, Targets)
-- `/etc/nc-sync/telegram.env` – Telegram Zugangsdaten
+Format:
 
-Logs:
-- `/var/log/nc-sync/` (rclone JSON Logs, Error-Extrakte, ClamAV Logs)
+```
+INSTANZ|RCLONE_REMOTE|ZIELPFAD
+```
 
-Quarantäne:
-- `${QUAR_DIR}/YYYY-MM-DD/<relativer_pfad>`
+Beispiel:
 
----
+```
+oc-sync-1|oc1|/mnt/nas/daten/oc-sync-1
+oc-sync-2|oc2|/mnt/nas/daten/oc-sync-2
+oc-sync-3|oc3|/mnt/nas/daten/oc-sync-3
+```
+
+### `/etc/nc-sync/telegram.env`
+
+```
+TG_TOKEN="123456:ABC..."
+TG_CHAT_ID="7174123807"
+```
+
+### `/etc/nc-sync/settings.conf`
+
+Hier kannst du Intervalle/Thresholds ändern:
+
+- `MIN_FREE_GIB` (Default 20)
+- `SYNC_INTERVAL` (Default `2h`)
+- `SPACE_CHECK_INTERVAL` (Default `15min`)
+- `SPACE_ALERT_COOLDOWN` (Default `6h`)
+- `MAX_DELETE` (Default `2000`)
+- `RCLONE_TRANSFERS`, `RCLONE_CHECKERS`, `RCLONE_TIMEOUT`, `RCLONE_CONTIMEOUT`
+
+## Update / Uninstall
+
+```bash
+sudo ./update.sh
+sudo ./uninstall.sh
+```
+
+`update.sh` überschreibt **nur** Scripts/Units, nicht deine Configs in `/etc/nc-sync`.
 
 ## Sicherheitshinweise
 
-- Das Setup nutzt `rclone sync` (Mirror). Mit `--max-delete` wird Mass-Delete begrenzt.
-- Bei zu wenig freiem Speicher (< `MIN_FREE_GIB`) wird der Pull **abgebrochen** und Telegram informiert.
-- App-Passwörter werden in rclone **obfuscated** gespeichert (nicht Klartext, aber auch kein starker Kryptoschutz).
-
----
-
-## Update
-```bash
-cd nextcloud-nas-pull-sync
-sudo bash update.sh
-```
-
----
-
-## Uninstall
-```bash
-cd nextcloud-nas-pull-sync
-sudo bash uninstall.sh
-```
-
----
+- `rclone sync` löscht lokal, wenn in der Cloud gelöscht wird. Schutz:
+  - `--max-delete` (Default 2000)
+- Für “Backup-User” in ownCloud/Nextcloud am besten **Read-only Shares** nutzen.
 
 ## Lizenz
-MIT – siehe `LICENSE`.
+
+MIT

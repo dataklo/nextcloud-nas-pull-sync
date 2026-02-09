@@ -1,11 +1,4 @@
-# local config
-config/*.env
-config/*.env.local
-
-# logs
-*.log
-*.json
-*.tsv
-
-# OS
 .DS_Store
+*.swp
+*.tmp
+*.log

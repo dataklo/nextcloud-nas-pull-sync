@@ -1,276 +1,173 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# nextcloud-nas-pull-sync installer for Ubuntu 24.04 minimal
-
 if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root (sudo ./install.sh)" >&2
+  echo "Bitte als root ausführen (sudo)." >&2
   exit 1
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "== owncloud-nas-pull-sync Installer =="
 
-echo "==> Installing required packages"
-export DEBIAN_FRONTEND=noninteractive
 apt update
-apt install -y \
-  ca-certificates curl jq util-linux logrotate \
-  nfs-common rclone \
-  clamav clamav-daemon
+apt install -y rclone jq curl util-linux logrotate clamav clamav-daemon
 
-systemctl enable --now clamav-freshclam clamav-daemon || true
+systemctl enable --now clamav-freshclam clamav-daemon >/dev/null 2>&1 || true
 
-echo "==> Creating directories"
 mkdir -p /etc/nc-sync /var/log/nc-sync /var/lib/nc-sync /var/lock
 
-# ---- Configure Telegram ----
+SETTINGS="/etc/nc-sync/settings.conf"
+if [[ ! -f "$SETTINGS" ]]; then
+  cp -n "./config/settings.conf.example" "$SETTINGS"
+fi
+
+# shellcheck disable=SC1090
+source "$SETTINGS" || true
+: "${MOUNT_PATH:=/mnt/nas}"
+: "${MIN_FREE_GIB:=20}"
+: "${SYNC_INTERVAL:=2h}"
+: "${SPACE_CHECK_INTERVAL:=15min}"
+: "${SPACE_ALERT_COOLDOWN:=6h}"
+: "${MAX_DELETE:=2000}"
+: "${RCLONE_TRANSFERS:=4}"
+: "${RCLONE_CHECKERS:=8}"
+: "${RCLONE_TIMEOUT:=5m}"
+: "${RCLONE_CONTIMEOUT:=15s}"
+
+echo
+read -r -p "NAS Mount Pfad? [${MOUNT_PATH}]: " inp || true
+if [[ -n "${inp:-}" ]]; then MOUNT_PATH="$inp"; fi
+
+read -r -p "Minimum Free Space in GiB? [${MIN_FREE_GIB}]: " inp || true
+if [[ -n "${inp:-}" ]]; then MIN_FREE_GIB="$inp"; fi
+
+read -r -p "Sync Intervall (systemd timespan, z.B. 30min, 1h, 2h)? [${SYNC_INTERVAL}]: " inp || true
+if [[ -n "${inp:-}" ]]; then SYNC_INTERVAL="$inp"; fi
+
+read -r -p "Space-Check Intervall? [${SPACE_CHECK_INTERVAL}]: " inp || true
+if [[ -n "${inp:-}" ]]; then SPACE_CHECK_INTERVAL="$inp"; fi
+
+read -r -p "Space-Alert Cooldown (z.B. 6h, 1h)? [${SPACE_ALERT_COOLDOWN}]: " inp || true
+if [[ -n "${inp:-}" ]]; then SPACE_ALERT_COOLDOWN="$inp"; fi
+
+read -r -p "Max Deletes pro Sync (Schutz) ? [${MAX_DELETE}]: " inp || true
+if [[ -n "${inp:-}" ]]; then MAX_DELETE="$inp"; fi
+
+cat >"$SETTINGS" <<EOF
+MOUNT_PATH=${MOUNT_PATH}
+MIN_FREE_GIB=${MIN_FREE_GIB}
+SYNC_INTERVAL=${SYNC_INTERVAL}
+SPACE_CHECK_INTERVAL=${SPACE_CHECK_INTERVAL}
+SPACE_ALERT_COOLDOWN=${SPACE_ALERT_COOLDOWN}
+MAX_DELETE=${MAX_DELETE}
+RCLONE_TRANSFERS=${RCLONE_TRANSFERS}
+RCLONE_CHECKERS=${RCLONE_CHECKERS}
+RCLONE_TIMEOUT=${RCLONE_TIMEOUT}
+RCLONE_CONTIMEOUT=${RCLONE_CONTIMEOUT}
+EOF
+chmod 600 "$SETTINGS"
+
+mkdir -p "${MOUNT_PATH}/daten" "${MOUNT_PATH}/quarantine"
+
 TG_ENV="/etc/nc-sync/telegram.env"
 if [[ ! -f "$TG_ENV" ]]; then
-  echo "==> Telegram config"
-  read -rp "Telegram Bot Token (TG_TOKEN): " TG_TOKEN
-  read -rp "Telegram Chat ID (TG_CHAT_ID) [7174123807]: " TG_CHAT_ID
-  TG_CHAT_ID="${TG_CHAT_ID:-7174123807}"
-  umask 077
-  cat >"$TG_ENV" <<EOT
-TG_TOKEN="${TG_TOKEN}"
-TG_CHAT_ID="${TG_CHAT_ID}"
-EOT
+  echo
+  echo "Telegram Setup:"
+  read -r -p "Bot Token (TG_TOKEN): " tg_token
+  read -r -p "Chat ID (TG_CHAT_ID): " tg_chat
+
+  cat >"$TG_ENV" <<EOF
+TG_TOKEN="${tg_token}"
+TG_CHAT_ID="${tg_chat}"
+EOF
   chmod 600 "$TG_ENV"
-else
-  echo "==> Telegram config exists: $TG_ENV (keeping)"
 fi
 
-# ---- Install scripts ----
-echo "==> Installing scripts to /usr/local/bin"
-install -m 0755 "$ROOT_DIR/scripts/tg_send" /usr/local/bin/tg_send
-install -m 0755 "$ROOT_DIR/scripts/nc_check_space" /usr/local/bin/nc_check_space
-install -m 0755 "$ROOT_DIR/scripts/nc_pull" /usr/local/bin/nc_pull
-install -m 0755 "$ROOT_DIR/scripts/nc_fullscan" /usr/local/bin/nc_fullscan
+install -m 0755 ./scripts/tg_send.sh /usr/local/bin/tg_send
+install -m 0755 ./scripts/nc_check_space.sh /usr/local/bin/nc_check_space
+install -m 0755 ./scripts/nc_pull.sh /usr/local/bin/nc_pull
+install -m 0755 ./scripts/nc_fullscan.sh /usr/local/bin/nc_fullscan
 
-# ---- Configure main config ----
-CFG="/etc/nc-sync/config.env"
-if [[ ! -f "$CFG" ]]; then
-  echo "==> Main config"
-  read -rp "NAS IP [192.168.1.61]: " NAS_IP
-  NAS_IP="${NAS_IP:-192.168.1.61}"
-  read -rp "NFS export path on NAS [/volume1/nc-sync]: " NFS_EXPORT
-  NFS_EXPORT="${NFS_EXPORT:-/volume1/nc-sync}"
-  read -rp "Mountpoint in VM [/mnt/nas]: " NAS_MOUNT
-  NAS_MOUNT="${NAS_MOUNT:-/mnt/nas}"
+ACCOUNTS="/etc/nc-sync/accounts.conf"
+if [[ ! -f "$ACCOUNTS" ]]; then
+  cp -n ./config/accounts.conf.example "$ACCOUNTS"
+  echo
+  echo "Accounts Datei erstellt: $ACCOUNTS"
+  echo "Bitte anpassen (INSTANZ|REMOTE|ZIELPFAD)."
+fi
+chmod 600 "$ACCOUNTS"
 
-  read -rp "Data directory [${NAS_MOUNT}/daten]: " DATA_DIR
-  DATA_DIR="${DATA_DIR:-${NAS_MOUNT}/daten}"
-  read -rp "Quarantine directory [${NAS_MOUNT}/quarantine]: " QUAR_DIR
-  QUAR_DIR="${QUAR_DIR:-${NAS_MOUNT}/quarantine}"
-
-  read -rp "Minimum free space in GiB before pull starts [20]: " MIN_FREE_GIB
-  MIN_FREE_GIB="${MIN_FREE_GIB:-20}"
-
-  read -rp "Nextcloud base URL [https://cloud.dataklo.de]: " NC_BASE_URL
-  NC_BASE_URL="${NC_BASE_URL:-https://cloud.dataklo.de}"
-
-  echo "\n==> Sync targets (3 defaults). Press ENTER to accept defaults."
-  echo "Format: INSTANCE|REMOTE_NAME|NC_USERNAME|DEST_PATH"
-  read -rp "Target 1 [tj-doeren|nc_tj|tj.doeren|${DATA_DIR}/tj-doeren]: " T1
-  T1="${T1:-tj-doeren|nc_tj|tj.doeren|${DATA_DIR}/tj-doeren}"
-  read -rp "Target 2 [h-schulze|nc_hs|h.schulze|${DATA_DIR}/h-schulze]: " T2
-  T2="${T2:-h-schulze|nc_hs|h.schulze|${DATA_DIR}/h-schulze}"
-  read -rp "Target 3 [em-knoche|nc_em|em.knoche|${DATA_DIR}/em-knoche]: " T3
-  T3="${T3:-em-knoche|nc_em|em.knoche|${DATA_DIR}/em-knoche}"
-
-  read -rp "Pull interval (systemd) [2h]: " PULL_INTERVAL
-  PULL_INTERVAL="${PULL_INTERVAL:-2h}"
-  read -rp "Random delay (systemd) [5min]: " PULL_RANDOM_DELAY
-  PULL_RANDOM_DELAY="${PULL_RANDOM_DELAY:-5min}"
-
-  read -rp "Daily ClamAV scan time (OnCalendar) [*-*-* 03:15:00]: " CLAMAV_ONCALENDAR
-  CLAMAV_ONCALENDAR="${CLAMAV_ONCALENDAR:-*-*-* 03:15:00}"
-
-  read -rp "Spacecheck interval [15min]: " SPACECHECK_INTERVAL
-  SPACECHECK_INTERVAL="${SPACECHECK_INTERVAL:-15min}"
-
-  umask 077
-  cat >"$CFG" <<EOT
-# Generated by nextcloud-nas-pull-sync installer
-NAS_MOUNT="${NAS_MOUNT}"
-DATA_DIR="${DATA_DIR}"
-QUAR_DIR="${QUAR_DIR}"
-MIN_FREE_GIB=${MIN_FREE_GIB}
-
-RCLONE_TRANSFERS=4
-RCLONE_CHECKERS=8
-RCLONE_MAX_DELETE=2000
-RCLONE_CONTIMEOUT="15s"
-RCLONE_TIMEOUT="5m"
-RCLONE_RETRIES=3
-RCLONE_LOW_LEVEL_RETRIES=20
-RCLONE_RETRIES_SLEEP="30s"
-
-NC_BASE_URL="${NC_BASE_URL}"
-
-SYNC_TARGETS="
-${T1}
-${T2}
-${T3}
-"
-
-CLAMAV_ONCALENDAR="${CLAMAV_ONCALENDAR}"
-PULL_INTERVAL="${PULL_INTERVAL}"
-PULL_RANDOM_DELAY="${PULL_RANDOM_DELAY}"
-SPACECHECK_INTERVAL="${SPACECHECK_INTERVAL}"
-
-# NFS details for convenience
-NFS_NAS_IP="${NAS_IP}"
-NFS_EXPORT="${NFS_EXPORT}"
-EOT
-  chmod 600 "$CFG"
-else
-  echo "==> Main config exists: $CFG (keeping)"
+echo
+read -r -p "Möchtest du rclone Remotes jetzt anlegen? (y/N): " ans || true
+if [[ "${ans:-}" =~ ^[Yy]$ ]]; then
+  echo "Remotes anlegen (WebDAV). Tipp: ownCloud meistens https://host/remote.php/webdav/"
+  while true; do
+    read -r -p "Remote Name (z.B. oc1) [leer zum Beenden]: " rname || true
+    [[ -z "${rname:-}" ]] && break
+    read -r -p "Vendor (owncloud|nextcloud|other) [owncloud]: " vendor || true
+    vendor="${vendor:-owncloud}"
+    read -r -p "WebDAV URL: " url
+    read -r -p "Username: " user
+    read -s -p "App-Passwort: " pass; echo
+    obs="$(rclone obscure "$pass")"
+    unset pass
+    rclone config create "$rname" webdav url "$url" vendor "$vendor" user "$user" pass "$obs"
+    unset obs
+    echo "Remote '$rname' angelegt."
+  done
 fi
 
-# shellcheck disable=SC1091
-source /etc/nc-sync/config.env
+install -m 0644 ./systemd/nc-pull@.service /etc/systemd/system/nc-pull@.service
 
-# ---- NFS mount ----
-echo "==> Ensuring NAS mount exists"
-mkdir -p "${NAS_MOUNT}"
-
-FSTAB_LINE="${NFS_NAS_IP}:${NFS_EXPORT}  ${NAS_MOUNT}  nfs4  noatime,_netdev,x-systemd.automount,x-systemd.idle-timeout=600  0  0"
-if ! grep -q "^[^#].*${NAS_MOUNT}.*nfs4" /etc/fstab; then
-  echo "==> Adding NFS automount to /etc/fstab"
-  echo "$FSTAB_LINE" >> /etc/fstab
-fi
-
-systemctl daemon-reload
-mount -a || true
-
-if ! mountpoint -q "${NAS_MOUNT}"; then
-  echo "!! NAS mount not active yet. Trying manual mount..."
-  mount -t nfs4 -o vers=4.1,proto=tcp "${NFS_NAS_IP}:${NFS_EXPORT}" "${NAS_MOUNT}"
-fi
-
-mkdir -p "${DATA_DIR}" "${QUAR_DIR}"
-
-# ---- Create rclone remotes if missing ----
-echo "==> rclone remotes"
-REMOTES_EXISTING="$(rclone listremotes 2>/dev/null || true)"
-
-while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
-  [[ "$line" =~ ^# ]] && continue
-  IFS='|' read -r inst rem user dest <<<"$line"
-  [[ -z "$rem" || -z "$user" ]] && continue
-
-  if echo "$REMOTES_EXISTING" | grep -qx "${rem}:"; then
-    echo "  - remote exists: ${rem}"
-    continue
-  fi
-
-  echo "  - creating remote: ${rem} (user: ${user})"
-  read -s -p "App password for ${user}: " APPPASS; echo
-  OBS="$(rclone obscure "$APPPASS")"
-  unset APPPASS
-
-  # Ensure base URL has no trailing slash
-  BASE_URL="${NC_BASE_URL%/}"
-  URL="${BASE_URL}/remote.php/dav/files/${user}/"
-
-  rclone config create "$rem" webdav \
-    url "$URL" \
-    vendor nextcloud \
-    user "$user" \
-    pass "$OBS"
-
-  unset OBS
-
-done < <(printf "%s\n" "$SYNC_TARGETS")
-
-echo "==> Installing systemd units"
-install -m 0644 "$ROOT_DIR/systemd/nc-pull@.service" /etc/systemd/system/nc-pull@.service
-
-# Generate timers from config
-cat >/etc/systemd/system/nc-pull@.timer <<EOT
+cat >/etc/systemd/system/nc-pull@.timer <<EOF
 [Unit]
-Description=Run Nextcloud Pull for %i regularly
+Description=Run Cloud Pull for %i regularly
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=${PULL_INTERVAL}
-RandomizedDelaySec=${PULL_RANDOM_DELAY}
+OnUnitActiveSec=${SYNC_INTERVAL}
+RandomizedDelaySec=5min
 Persistent=true
 
 [Install]
 WantedBy=timers.target
-EOT
+EOF
 
-install -m 0644 "$ROOT_DIR/systemd/nc-fullscan.service" /etc/systemd/system/nc-fullscan.service
-cat >/etc/systemd/system/nc-fullscan.timer <<EOT
-[Unit]
-Description=Run daily ClamAV scan
+install -m 0644 ./systemd/nc-fullscan.service /etc/systemd/system/nc-fullscan.service
+install -m 0644 ./systemd/nc-fullscan.timer /etc/systemd/system/nc-fullscan.timer
 
-[Timer]
-OnCalendar=${CLAMAV_ONCALENDAR}
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOT
-
-install -m 0644 "$ROOT_DIR/systemd/nc-spacecheck.service" /etc/systemd/system/nc-spacecheck.service
-cat >/etc/systemd/system/nc-spacecheck.timer <<EOT
+install -m 0644 ./systemd/nc-spacecheck.service /etc/systemd/system/nc-spacecheck.service
+cat >/etc/systemd/system/nc-spacecheck.timer <<EOF
 [Unit]
 Description=Run disk space check regularly
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=${SPACECHECK_INTERVAL}
+OnUnitActiveSec=${SPACE_CHECK_INTERVAL}
 Persistent=true
 
 [Install]
 WantedBy=timers.target
-EOT
+EOF
+
+install -m 0644 ./systemd/logrotate-nc-sync /etc/logrotate.d/nc-sync
 
 systemctl daemon-reload
 
-# Enable timers per instance
-INSTANCES=()
+systemctl enable --now nc-spacecheck.timer
+systemctl enable --now nc-fullscan.timer
+
+echo
+echo "Aktiviere Pull-Timer für Instanzen aus $ACCOUNTS ..."
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   [[ "$line" =~ ^# ]] && continue
-  IFS='|' read -r inst _ _ dest <<<"$line"
-  [[ -z "$inst" ]] && continue
-  INSTANCES+=("$inst")
-  mkdir -p "$dest"
-
-done < <(printf "%s\n" "$SYNC_TARGETS")
-
-for inst in "${INSTANCES[@]}"; do
+  inst="${line%%|*}"
   systemctl enable --now "nc-pull@${inst}.timer"
-done
+done <"$ACCOUNTS"
 
-systemctl enable --now nc-fullscan.timer
-systemctl enable --now nc-spacecheck.timer
-
-# logrotate
-cat >/etc/logrotate.d/nc-sync <<'EOT'
-/var/log/nc-sync/*.json /var/log/nc-sync/*.tsv /var/log/nc-sync/clamav-*.log /var/log/nc-sync/clamav-*.infected.txt {
-  daily
-  rotate 14
-  missingok
-  notifempty
-  compress
-  delaycompress
-  copytruncate
-}
-EOT
-
-# Final test message
-/usr/local/bin/tg_send "✅ nextcloud-nas-pull-sync installiert.\nMount: ${NAS_MOUNT}\nDaten: ${DATA_DIR}\nQuarantäne: ${QUAR_DIR}" || true
+# Test telegram
+/usr/local/bin/tg_send "✅ owncloud-nas-pull-sync installiert. Mount: ${MOUNT_PATH}"
 
 echo
-echo "==> Done"
-echo "Timers:"
-systemctl list-timers --all | grep -E 'nc-pull@|nc-fullscan|nc-spacecheck' || true
-echo
-echo "Manual test (example):"
-echo "  systemctl start nc-pull@${INSTANCES[0]:-tj-doeren}.service"
+echo "Fertig."
+echo "Timer anzeigen: systemctl list-timers | grep nc-"

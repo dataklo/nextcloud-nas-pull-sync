@@ -1,5 +1,5 @@
 [Unit]
-Description=Check free disk space on NAS and alert via Telegram
+Description=Check free disk space and alert via Telegram
 
 [Service]
 Type=oneshot

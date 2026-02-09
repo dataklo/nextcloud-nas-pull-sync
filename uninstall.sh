@@ -2,57 +2,49 @@
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root (sudo ./uninstall.sh)" >&2
+  echo "Bitte als root ausführen (sudo)." >&2
   exit 1
 fi
 
-CONFIG="/etc/nc-sync/config.env"
+echo "== owncloud-nas-pull-sync Uninstall =="
 
-echo "==> Stopping and disabling systemd timers"
+ACCOUNTS="/etc/nc-sync/accounts.conf"
 
-# Disable per-instance pull timers (best-effort)
-if [[ -f "$CONFIG" ]]; then
-  # shellcheck disable=SC1091
-  source "$CONFIG"
+if [[ -f "$ACCOUNTS" ]]; then
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     [[ "$line" =~ ^# ]] && continue
-    IFS='|' read -r inst _ _ _ <<<"$line"
-    [[ -z "$inst" ]] && continue
-    systemctl disable --now "nc-pull@${inst}.timer" 2>/dev/null || true
-  done < <(printf "%s\n" "${SYNC_TARGETS:-}")
+    inst="${line%%|*}"
+    systemctl disable --now "nc-pull@${inst}.timer" >/dev/null 2>&1 || true
+  done <"$ACCOUNTS"
 fi
 
-systemctl disable --now nc-fullscan.timer 2>/dev/null || true
-systemctl disable --now nc-spacecheck.timer 2>/dev/null || true
+systemctl disable --now nc-spacecheck.timer >/dev/null 2>&1 || true
+systemctl disable --now nc-fullscan.timer >/dev/null 2>&1 || true
 
-echo "==> Removing systemd unit files"
-rm -f /etc/systemd/system/nc-pull@.service \
-      /etc/systemd/system/nc-pull@.timer \
-      /etc/systemd/system/nc-fullscan.service \
-      /etc/systemd/system/nc-fullscan.timer \
-      /etc/systemd/system/nc-spacecheck.service \
-      /etc/systemd/system/nc-spacecheck.timer
+rm -f /etc/systemd/system/nc-pull@.service
+rm -f /etc/systemd/system/nc-pull@.timer
+rm -f /etc/systemd/system/nc-spacecheck.service
+rm -f /etc/systemd/system/nc-spacecheck.timer
+rm -f /etc/systemd/system/nc-fullscan.service
+rm -f /etc/systemd/system/nc-fullscan.timer
 
 systemctl daemon-reload
 
-echo "==> Removing installed scripts"
-rm -f /usr/local/bin/tg_send \
-      /usr/local/bin/nc_check_space \
-      /usr/local/bin/nc_pull \
-      /usr/local/bin/nc_fullscan
+rm -f /usr/local/bin/tg_send
+rm -f /usr/local/bin/nc_check_space
+rm -f /usr/local/bin/nc_pull
+rm -f /usr/local/bin/nc_fullscan
 
-echo "==> Removing logrotate rule"
 rm -f /etc/logrotate.d/nc-sync
 
 echo
-read -rp "Remove /etc/nc-sync (config + telegram credentials)? [y/N]: " ANSW
-ANSW="${ANSW:-N}"
-if [[ "$ANSW" =~ ^[Yy]$ ]]; then
+read -r -p "Configs unter /etc/nc-sync löschen? (y/N): " ans || true
+if [[ "${ans:-}" =~ ^[Yy]$ ]]; then
   rm -rf /etc/nc-sync
-  echo "Removed /etc/nc-sync"
+  echo "Configs gelöscht."
 else
-  echo "Keeping /etc/nc-sync"
+  echo "Configs behalten."
 fi
 
-echo "==> Uninstall complete"
+echo "Uninstall fertig."
