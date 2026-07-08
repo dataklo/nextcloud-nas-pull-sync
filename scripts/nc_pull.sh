@@ -99,11 +99,10 @@ write_bisync_errors() {
 }
 
 bisync_needs_resync() {
-  local err_file="$1"
+  local rc="$1"
+  local err_file="$2"
 
-  grep -Fq -e 'Must run --resync to recover' \
-    -e 'cannot find prior Path1 or Path2 listings' \
-    "${err_file}"
+  [[ "${rc}" -eq 7 ]] || grep -Fq 'Must run --resync to recover' "${err_file}"
 }
 
 set +e
@@ -112,9 +111,9 @@ RC=$?
 set -e
 write_bisync_errors "${LOG}" "${ERR}"
 
-if [[ $RC -ne 0 ]] && bisync_needs_resync "${ERR}"; then
+if [[ $RC -ne 0 ]] && bisync_needs_resync "${RC}" "${ERR}"; then
   RECOVERY_LOG="/var/log/nc-sync/bisync-${INSTANCE}-${TS}-resync.json"
-  "$TG_SEND" "⚠️ Bi-Sync-Recovery (${INSTANCE}): rclone meldet fehlende Bisync-Listings. Starte einmalig --resync --resync-mode path1; Remote ${REMOTE}: ist maßgeblich." || true
+  "$TG_SEND" "⚠️ Bi-Sync-Recovery (${INSTANCE}): rclone meldet einen kritischen Bisync-Recovery-Zustand. Starte einmalig --resync --resync-mode path1; Remote ${REMOTE}: ist maßgeblich." || true
   set +e
   run_bisync "${RECOVERY_LOG}" --resync --resync-mode path1
   RC=$?

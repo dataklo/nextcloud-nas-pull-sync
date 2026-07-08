@@ -116,7 +116,7 @@ Hier kannst du Intervalle/Thresholds ändern:
 
 ### `Bisync aborted. Must run --resync to recover.`
 
-Wenn rclone in der `.errors.tsv`-Fehlerdatei meldet, dass frühere Path-Listings fehlen, startet `nc_pull` automatisch genau einen Recovery-Lauf mit:
+Wenn rclone den kritischen Recovery-Zustand `Must run --resync to recover` meldet oder mit Exitcode `7` beendet wird, startet `nc_pull` automatisch genau einen Recovery-Lauf mit:
 
 ```bash
 rclone bisync <remote>: <zielpfad> --resync --resync-mode path1
