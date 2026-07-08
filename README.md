@@ -38,11 +38,22 @@ Alternativ / je nach Setup funktioniert auch:
 curl -u USER:PASS -X PROPFIND "https://<HOST>/remote.php/dav/files/<USER>/" -sS -i | head
 ```
 
-## Quickstart
+## Installation
+
+Klonen des Repositories und Starten des Installers:
 
 ```bash
-unzip owncloud-nas-pull-sync.zip
-cd owncloud-nas-pull-sync
+git clone https://github.com/dataklo/nextcloud-nas-pull-sync.git
+cd nextcloud-nas-pull-sync
+chmod +x install.sh update.sh uninstall.sh
+sudo ./install.sh
+```
+
+Falls du stattdessen ein ZIP-Archiv verwendest:
+
+```bash
+unzip nextcloud-nas-pull-sync.zip
+cd nextcloud-nas-pull-sync
 sudo ./install.sh
 ```
 
@@ -99,6 +110,26 @@ Hier kannst du Intervalle/Thresholds ändern:
 - `SPACE_ALERT_COOLDOWN` (Default `6h`)
 - `MAX_DELETE` (Default `50`, Prozentgrenze für rclone bisync)
 - `RCLONE_TRANSFERS`, `RCLONE_CHECKERS`, `RCLONE_TIMEOUT`, `RCLONE_CONTIMEOUT`
+
+
+## Fehlerbehebung
+
+### `Bisync aborted. Must run --resync to recover.`
+
+Wenn rclone meldet, dass frühere Path-Listings fehlen, startet `nc_pull` automatisch genau einen Recovery-Lauf mit:
+
+```bash
+rclone bisync <remote>: <zielpfad> --resync --resync-mode path1
+```
+
+Dabei ist die Cloud als `path1` maßgeblich. Du kannst den Lauf bei Bedarf auch manuell für eine Instanz anstoßen:
+
+```bash
+sudo systemctl start nc-pull@<instance>.service
+journalctl -u nc-pull@<instance>.service -n 100 --no-pager
+```
+
+Beispiel für `<instance>`: `oc-sync-1` aus `/etc/nc-sync/accounts.conf`.
 
 ## Update / Uninstall
 

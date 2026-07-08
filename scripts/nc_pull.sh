@@ -76,18 +76,40 @@ if ! compgen -G "${WORKDIR}/*.lst" >/dev/null; then
   BISYNC_INIT_FLAGS=(--resync --resync-mode path1)
 fi
 
+run_bisync() {
+  local log_file="$1"
+  shift
+
+  set +e
+  rclone bisync "${REMOTE}:" "${DEST}" \
+    "$@" \
+    --fast-list --transfers "${RCLONE_TRANSFERS}" --checkers "${RCLONE_CHECKERS}" \
+    --retries 3 --low-level-retries 20 --retries-sleep 30s \
+    --contimeout "${RCLONE_CONTIMEOUT}" --timeout "${RCLONE_TIMEOUT}" \
+    --workdir "${WORKDIR}" --resilient --recover --max-lock 5m \
+    --max-delete "${MAX_DELETE}" \
+    --conflict-resolve path1 --conflict-loser delete \
+    --log-level INFO --use-json-log --log-file "${log_file}"
+  local rc=$?
+  set -e
+
+  return "$rc"
+}
+
 set +e
-rclone bisync "${REMOTE}:" "${DEST}" \
-  "${BISYNC_INIT_FLAGS[@]}" \
-  --fast-list --transfers "${RCLONE_TRANSFERS}" --checkers "${RCLONE_CHECKERS}" \
-  --retries 3 --low-level-retries 20 --retries-sleep 30s \
-  --contimeout "${RCLONE_CONTIMEOUT}" --timeout "${RCLONE_TIMEOUT}" \
-  --workdir "${WORKDIR}" --resilient --recover --max-lock 5m \
-  --max-delete "${MAX_DELETE}" \
-  --conflict-resolve path1 --conflict-loser delete \
-  --log-level INFO --use-json-log --log-file "${LOG}"
+run_bisync "${LOG}" "${BISYNC_INIT_FLAGS[@]}"
 RC=$?
 set -e
+
+if [[ $RC -ne 0 ]] && grep -q 'Must run --resync to recover\|cannot find prior Path1 or Path2 listings' "${LOG}"; then
+  RECOVERY_LOG="/var/log/nc-sync/bisync-${INSTANCE}-${TS}-resync.json"
+  "$TG_SEND" "⚠️ Bi-Sync-Recovery (${INSTANCE}): rclone meldet fehlende Bisync-Listings. Starte einmalig --resync --resync-mode path1; Remote ${REMOTE}: ist maßgeblich." || true
+  set +e
+  run_bisync "${RECOVERY_LOG}" --resync --resync-mode path1
+  RC=$?
+  set -e
+  LOG="${RECOVERY_LOG}"
+fi
 
 jq -r 'select(.level=="error") | [.time, (.object//"-"), .msg] | @tsv' "${LOG}" > "${ERR}" || true
 
