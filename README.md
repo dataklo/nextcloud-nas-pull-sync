@@ -38,11 +38,22 @@ Alternativ / je nach Setup funktioniert auch:
 curl -u USER:PASS -X PROPFIND "https://<HOST>/remote.php/dav/files/<USER>/" -sS -i | head
 ```
 
-## Quickstart
+## Installation
+
+Klonen des Repositories und Starten des Installers:
 
 ```bash
-unzip owncloud-nas-pull-sync.zip
-cd owncloud-nas-pull-sync
+git clone https://github.com/dataklo/nextcloud-nas-pull-sync.git
+cd nextcloud-nas-pull-sync
+chmod +x install.sh update.sh uninstall.sh
+sudo ./install.sh
+```
+
+Falls du stattdessen ein ZIP-Archiv verwendest:
+
+```bash
+unzip nextcloud-nas-pull-sync.zip
+cd nextcloud-nas-pull-sync
 sudo ./install.sh
 ```
 
