@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Nextcloud Pull for %i regularly
+Description=Run Nextcloud Bi-Sync for %i regularly
 
 [Timer]
 OnBootSec=5min

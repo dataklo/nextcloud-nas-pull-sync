@@ -1,8 +1,9 @@
 # owncloud-nas-pull-sync
 
-Automatischer **Pull-Sync** von **ownCloud oder Nextcloud** auf ein lokales NAS (NFS/SMB), inkl.:
+Automatischer **Bi-Sync** von **ownCloud oder Nextcloud** auf ein lokales NAS (NFS/SMB), inkl.:
 
-- **rclone sync (Cloud → NAS)** mit **Deletes** (wenn in der Cloud gelöscht wird, wird lokal auch gelöscht)
+- **rclone bisync (Cloud ↔ NAS)** mit **Deletes** (Löschungen werden in beide Richtungen synchronisiert)
+- **Remote gewinnt bei Konflikten**: Bei Datei-Konflikten wird die Cloud-Version bevorzugt und die lokale Konfliktversion verworfen.
 - **3+ Accounts** (beliebig viele) über eine Konfig-Datei
 - **Telegram Alerts** (Sync-Fehler inkl. betroffener Datei, Remote nicht erreichbar, Low Disk Space)
 - **Low Disk Space Alarm** (Default: < 20 GiB frei)
@@ -10,7 +11,7 @@ Automatischer **Pull-Sync** von **ownCloud oder Nextcloud** auf ein lokales NAS 
 - **systemd Timer** (statt Cron)
 - **Logrotate** für Logs
 
-> Ziel: Datenfluss **cloud → NAS**. Kein Push zurück.
+> Ziel: Datenfluss **Cloud ↔ NAS**. Lokale Änderungen werden zurück in die Cloud synchronisiert.
 
 ## Voraussetzungen
 
@@ -96,7 +97,7 @@ Hier kannst du Intervalle/Thresholds ändern:
 - `SYNC_INTERVAL` (Default `2h`)
 - `SPACE_CHECK_INTERVAL` (Default `15min`)
 - `SPACE_ALERT_COOLDOWN` (Default `6h`)
-- `MAX_DELETE` (Default `2000`)
+- `MAX_DELETE` (Default `50`, Prozentgrenze für rclone bisync)
 - `RCLONE_TRANSFERS`, `RCLONE_CHECKERS`, `RCLONE_TIMEOUT`, `RCLONE_CONTIMEOUT`
 
 ## Update / Uninstall
@@ -110,9 +111,10 @@ sudo ./uninstall.sh
 
 ## Sicherheitshinweise
 
-- `rclone sync` löscht lokal, wenn in der Cloud gelöscht wird. Schutz:
-  - `--max-delete` (Default 2000)
-- Für “Backup-User” in ownCloud/Nextcloud am besten **Read-only Shares** nutzen.
+- `rclone bisync` synchronisiert Änderungen und Löschungen in beide Richtungen. Schutz:
+  - `--max-delete` (Default 50 %)
+  - Beim ersten Lauf pro Instanz wird automatisch `--resync --resync-mode path1` verwendet; weil die Cloud als Path1 läuft, ist die Remote-Version dabei maßgeblich.
+- Bei Konflikten nutzt der Job `--conflict-resolve path1 --conflict-loser delete`; dadurch gewinnt die Remote-Version.
 
 ## Lizenz
 
