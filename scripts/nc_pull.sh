@@ -76,20 +76,52 @@ if ! compgen -G "${WORKDIR}/*.lst" >/dev/null; then
   BISYNC_INIT_FLAGS=(--resync --resync-mode path1)
 fi
 
+run_bisync() {
+  local log_file="$1"
+  shift
+
+  rclone bisync "${REMOTE}:" "${DEST}" \
+    "$@" \
+    --fast-list --transfers "${RCLONE_TRANSFERS}" --checkers "${RCLONE_CHECKERS}" \
+    --retries 3 --low-level-retries 20 --retries-sleep 30s \
+    --contimeout "${RCLONE_CONTIMEOUT}" --timeout "${RCLONE_TIMEOUT}" \
+    --workdir "${WORKDIR}" --resilient --recover --max-lock 5m \
+    --max-delete "${MAX_DELETE}" \
+    --conflict-resolve path1 --conflict-loser delete \
+    --log-level INFO --use-json-log --log-file "${log_file}"
+}
+
+write_bisync_errors() {
+  local log_file="$1"
+  local err_file="$2"
+
+  jq -r 'select(.level=="error") | [.time, (.object//"-"), .msg] | @tsv' "${log_file}" > "${err_file}" || true
+}
+
+bisync_needs_resync() {
+  local err_file="$1"
+
+  grep -Fq -e 'Must run --resync to recover' \
+    -e 'cannot find prior Path1 or Path2 listings' \
+    "${err_file}"
+}
+
 set +e
-rclone bisync "${REMOTE}:" "${DEST}" \
-  "${BISYNC_INIT_FLAGS[@]}" \
-  --fast-list --transfers "${RCLONE_TRANSFERS}" --checkers "${RCLONE_CHECKERS}" \
-  --retries 3 --low-level-retries 20 --retries-sleep 30s \
-  --contimeout "${RCLONE_CONTIMEOUT}" --timeout "${RCLONE_TIMEOUT}" \
-  --workdir "${WORKDIR}" --resilient --recover --max-lock 5m \
-  --max-delete "${MAX_DELETE}" \
-  --conflict-resolve path1 --conflict-loser delete \
-  --log-level INFO --use-json-log --log-file "${LOG}"
+run_bisync "${LOG}" "${BISYNC_INIT_FLAGS[@]}"
 RC=$?
 set -e
+write_bisync_errors "${LOG}" "${ERR}"
 
-jq -r 'select(.level=="error") | [.time, (.object//"-"), .msg] | @tsv' "${LOG}" > "${ERR}" || true
+if [[ $RC -ne 0 ]] && bisync_needs_resync "${ERR}"; then
+  RECOVERY_LOG="/var/log/nc-sync/bisync-${INSTANCE}-${TS}-resync.json"
+  "$TG_SEND" "⚠️ Bi-Sync-Recovery (${INSTANCE}): rclone meldet fehlende Bisync-Listings. Starte einmalig --resync --resync-mode path1; Remote ${REMOTE}: ist maßgeblich." || true
+  set +e
+  run_bisync "${RECOVERY_LOG}" --resync --resync-mode path1
+  RC=$?
+  set -e
+  LOG="${RECOVERY_LOG}"
+  write_bisync_errors "${LOG}" "${ERR}"
+fi
 
 if [[ -s "${ERR}" ]]; then
   "$TG_SEND" "❌ Bi-Sync-Fehler (${INSTANCE})
