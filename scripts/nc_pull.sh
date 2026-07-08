@@ -80,6 +80,7 @@ run_bisync() {
   local log_file="$1"
   shift
 
+  set +e
   rclone bisync "${REMOTE}:" "${DEST}" \
     "$@" \
     --fast-list --transfers "${RCLONE_TRANSFERS}" --checkers "${RCLONE_CHECKERS}" \
@@ -89,38 +90,28 @@ run_bisync() {
     --max-delete "${MAX_DELETE}" \
     --conflict-resolve path1 --conflict-loser delete \
     --log-level INFO --use-json-log --log-file "${log_file}"
-}
+  local rc=$?
+  set -e
 
-write_bisync_errors() {
-  local log_file="$1"
-  local err_file="$2"
-
-  jq -r 'select(.level=="error") | [.time, (.object//"-"), .msg] | @tsv' "${log_file}" > "${err_file}" || true
-}
-
-bisync_needs_resync() {
-  local rc="$1"
-  local err_file="$2"
-
-  [[ "${rc}" -eq 7 ]] || grep -Fq 'Must run --resync to recover' "${err_file}"
+  return "$rc"
 }
 
 set +e
 run_bisync "${LOG}" "${BISYNC_INIT_FLAGS[@]}"
 RC=$?
 set -e
-write_bisync_errors "${LOG}" "${ERR}"
 
-if [[ $RC -ne 0 ]] && bisync_needs_resync "${RC}" "${ERR}"; then
+if [[ $RC -ne 0 ]] && grep -q 'Must run --resync to recover\|cannot find prior Path1 or Path2 listings' "${LOG}"; then
   RECOVERY_LOG="/var/log/nc-sync/bisync-${INSTANCE}-${TS}-resync.json"
-  "$TG_SEND" "⚠️ Bi-Sync-Recovery (${INSTANCE}): rclone meldet einen kritischen Bisync-Recovery-Zustand. Starte einmalig --resync --resync-mode path1; Remote ${REMOTE}: ist maßgeblich." || true
+  "$TG_SEND" "⚠️ Bi-Sync-Recovery (${INSTANCE}): rclone meldet fehlende Bisync-Listings. Starte einmalig --resync --resync-mode path1; Remote ${REMOTE}: ist maßgeblich." || true
   set +e
   run_bisync "${RECOVERY_LOG}" --resync --resync-mode path1
   RC=$?
   set -e
   LOG="${RECOVERY_LOG}"
-  write_bisync_errors "${LOG}" "${ERR}"
 fi
+
+jq -r 'select(.level=="error") | [.time, (.object//"-"), .msg] | @tsv' "${LOG}" > "${ERR}" || true
 
 if [[ -s "${ERR}" ]]; then
   "$TG_SEND" "❌ Bi-Sync-Fehler (${INSTANCE})
