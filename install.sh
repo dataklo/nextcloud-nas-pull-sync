@@ -27,7 +27,7 @@ source "$SETTINGS" || true
 : "${SYNC_INTERVAL:=2h}"
 : "${SPACE_CHECK_INTERVAL:=15min}"
 : "${SPACE_ALERT_COOLDOWN:=6h}"
-: "${MAX_DELETE:=2000}"
+: "${MAX_DELETE:=50}"
 : "${RCLONE_TRANSFERS:=4}"
 : "${RCLONE_CHECKERS:=8}"
 : "${RCLONE_TIMEOUT:=5m}"
@@ -49,7 +49,7 @@ if [[ -n "${inp:-}" ]]; then SPACE_CHECK_INTERVAL="$inp"; fi
 read -r -p "Space-Alert Cooldown (z.B. 6h, 1h)? [${SPACE_ALERT_COOLDOWN}]: " inp || true
 if [[ -n "${inp:-}" ]]; then SPACE_ALERT_COOLDOWN="$inp"; fi
 
-read -r -p "Max Deletes pro Sync (Schutz) ? [${MAX_DELETE}]: " inp || true
+read -r -p "Max Delete Prozent pro Bi-Sync (Schutz) ? [${MAX_DELETE}]: " inp || true
 if [[ -n "${inp:-}" ]]; then MAX_DELETE="$inp"; fi
 
 cat >"$SETTINGS" <<EOF
@@ -120,7 +120,7 @@ install -m 0644 ./systemd/nc-pull@.service /etc/systemd/system/nc-pull@.service
 
 cat >/etc/systemd/system/nc-pull@.timer <<EOF
 [Unit]
-Description=Run Cloud Pull for %i regularly
+Description=Run Cloud Bi-Sync for %i regularly
 
 [Timer]
 OnBootSec=5min
@@ -157,7 +157,7 @@ systemctl enable --now nc-spacecheck.timer
 systemctl enable --now nc-fullscan.timer
 
 echo
-echo "Aktiviere Pull-Timer für Instanzen aus $ACCOUNTS ..."
+echo "Aktiviere Bi-Sync-Timer für Instanzen aus $ACCOUNTS ..."
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   [[ "$line" =~ ^# ]] && continue

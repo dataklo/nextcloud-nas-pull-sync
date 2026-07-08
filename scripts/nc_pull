@@ -53,7 +53,7 @@ fi
 
 # Free space preflight (sends Telegram on threshold)
 if ! /usr/local/bin/nc_check_space; then
-  "$TG_SEND" "⛔ Pull abgebrochen (${INSTANCE}): zu wenig freier Speicher auf ${NAS_MOUNT:-/mnt/nas} (Minimum ${MIN_FREE_GIB:-20} GiB)." || true
+  "$TG_SEND" "⛔ Bi-Sync abgebrochen (${INSTANCE}): zu wenig freier Speicher auf ${NAS_MOUNT:-/mnt/nas} (Minimum ${MIN_FREE_GIB:-20} GiB)." || true
   exit 75
 fi
 
@@ -68,12 +68,20 @@ if [[ $RC_REMOTE -ne 0 ]]; then
 fi
 
 TS="$(date -Is | tr ':' '-')"
-LOG_JSON="$LOG_DIR/pull-${INSTANCE}-${TS}.json"
-ERR_TSV="$LOG_DIR/pull-${INSTANCE}-${TS}.errors.tsv"
+LOG_JSON="$LOG_DIR/bisync-${INSTANCE}-${TS}.json"
+ERR_TSV="$LOG_DIR/bisync-${INSTANCE}-${TS}.errors.tsv"
+WORKDIR="$STATE_DIR/bisync/${INSTANCE}"
+mkdir -p "$WORKDIR"
 
-# rclone sync: Cloud -> NAS inkl. Deletes
+BISYNC_INIT_FLAGS=()
+if ! compgen -G "${WORKDIR}/*.lst" >/dev/null; then
+  BISYNC_INIT_FLAGS=(--resync --resync-mode path1)
+fi
+
+# rclone bisync: Cloud <-> NAS inkl. Deletes, Remote gewinnt bei Konflikten
 set +e
 rclone bisync "${REMOTE}:" "${DEST}" \
+  "${BISYNC_INIT_FLAGS[@]}" \
   --fast-list \
   --transfers "${RCLONE_TRANSFERS:-4}" \
   --checkers "${RCLONE_CHECKERS:-8}" \
@@ -82,7 +90,9 @@ rclone bisync "${REMOTE}:" "${DEST}" \
   --retries-sleep "${RCLONE_RETRIES_SLEEP:-30s}" \
   --contimeout "${RCLONE_CONTIMEOUT:-15s}" \
   --timeout "${RCLONE_TIMEOUT:-5m}" \
-  --max-delete "${RCLONE_MAX_DELETE:-2000}" \
+  --workdir "${WORKDIR}" --resilient --recover --max-lock 5m \
+  --max-delete "${RCLONE_MAX_DELETE:-50}" \
+  --conflict-resolve path1 --conflict-loser delete \
   --log-level INFO --use-json-log --log-file "${LOG_JSON}"
 RC=$?
 set -e
@@ -91,11 +101,11 @@ set -e
 jq -r 'select(.level=="error") | [.time, (.object//"-"), .msg] | @tsv' "${LOG_JSON}" > "${ERR_TSV}" 2>/dev/null || true
 
 if [[ -s "${ERR_TSV}" ]]; then
-  "$TG_SEND" "❌ Pull-Fehler (${INSTANCE})\nRemote: ${REMOTE}:\nZeit | Datei | Fehler:\n$(tail -n 20 "${ERR_TSV}")" || true
+  "$TG_SEND" "❌ Bi-Sync-Fehler (${INSTANCE})\nRemote: ${REMOTE}:\nZeit | Datei | Fehler:\n$(tail -n 20 "${ERR_TSV}")" || true
 fi
 
 if [[ $RC -ne 0 ]]; then
-  "$TG_SEND" "⚠️ Pull-Job Exitcode (${INSTANCE}): ${RC}\nLog: ${LOG_JSON}" || true
+  "$TG_SEND" "⚠️ Bi-Sync-Job Exitcode (${INSTANCE}): ${RC}\nLog: ${LOG_JSON}" || true
 fi
 
 exit $RC

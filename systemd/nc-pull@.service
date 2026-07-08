@@ -1,5 +1,5 @@
 [Unit]
-Description=Cloud Pull (rclone sync) for %i
+Description=Cloud Bi-Sync (rclone bisync) for %i
 Wants=network-online.target
 After=network-online.target
 
