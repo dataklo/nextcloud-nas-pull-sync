@@ -73,7 +73,7 @@ ERR_TSV="$LOG_DIR/pull-${INSTANCE}-${TS}.errors.tsv"
 
 # rclone sync: Cloud -> NAS inkl. Deletes
 set +e
-rclone sync "${REMOTE}:" "${DEST}" \
+rclone bisync "${REMOTE}:" "${DEST}" \
   --fast-list \
   --transfers "${RCLONE_TRANSFERS:-4}" \
   --checkers "${RCLONE_CHECKERS:-8}" \
