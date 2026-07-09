@@ -116,3 +116,6 @@ Hier kannst du Intervalle/Thresholds ändern:
 
 ### `Bisync aborted. Must run --resync to recover.`
 
+Wenn rclone meldet, dass frühere Path-Listings fehlen, startet `nc_pull` automatisch einen zusätzlichen Recovery-Lauf mit `--resync --resync-mode path1`. Dabei gilt die Cloud-Seite (`REMOTE:` / Path1) als maßgeblich; lokale Abweichungen werden entsprechend überschrieben bzw. abgeglichen.
+
+Du solltest trotzdem prüfen, warum der vorherige Lauf kritisch abgebrochen ist, z. B. Stromausfall, volles Dateisystem, unterbrochener Mount oder Remote-Ausfall. Die Logs liegen unter `/var/log/nc-sync/bisync-<instanz>-<zeit>.json`; der Recovery-Lauf schreibt zusätzlich `...-resync.json`.

@@ -78,24 +78,60 @@ if ! compgen -G "${WORKDIR}/*.lst" >/dev/null; then
   BISYNC_INIT_FLAGS=(--resync --resync-mode path1)
 fi
 
-# rclone bisync: Cloud <-> NAS inkl. Deletes, Remote gewinnt bei Konflikten
+needs_resync_recovery() {
+  local log_file="$1"
+
+  if [[ ! -s "$log_file" ]]; then
+    return 1
+  fi
+
+  if jq -e 'select(.msg? | test("Must run --resync to recover|cannot find prior Path1 or Path2 listings"))' "$log_file" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  grep -Eq 'Must run --resync to recover|cannot find prior Path1 or Path2 listings' "$log_file"
+}
+
+run_bisync() {
+  local log_file="$1"
+  shift
+
+  # rclone bisync: Cloud <-> NAS inkl. Deletes, Remote gewinnt bei Konflikten
+  set +e
+  rclone bisync "${REMOTE}:" "${DEST}" \
+    "$@" \
+    --fast-list \
+    --transfers "${RCLONE_TRANSFERS:-4}" \
+    --checkers "${RCLONE_CHECKERS:-8}" \
+    --retries "${RCLONE_RETRIES:-3}" \
+    --low-level-retries "${RCLONE_LOW_LEVEL_RETRIES:-20}" \
+    --retries-sleep "${RCLONE_RETRIES_SLEEP:-30s}" \
+    --contimeout "${RCLONE_CONTIMEOUT:-15s}" \
+    --timeout "${RCLONE_TIMEOUT:-5m}" \
+    --workdir "${WORKDIR}" --resilient --recover --max-lock 5m \
+    --max-delete "${RCLONE_MAX_DELETE:-50}" \
+    --conflict-resolve path1 --conflict-loser delete \
+    --log-level INFO --use-json-log --log-file "${log_file}"
+  local rc=$?
+  set -e
+
+  return "$rc"
+}
+
 set +e
-rclone bisync "${REMOTE}:" "${DEST}" \
-  "${BISYNC_INIT_FLAGS[@]}" \
-  --fast-list \
-  --transfers "${RCLONE_TRANSFERS:-4}" \
-  --checkers "${RCLONE_CHECKERS:-8}" \
-  --retries "${RCLONE_RETRIES:-3}" \
-  --low-level-retries "${RCLONE_LOW_LEVEL_RETRIES:-20}" \
-  --retries-sleep "${RCLONE_RETRIES_SLEEP:-30s}" \
-  --contimeout "${RCLONE_CONTIMEOUT:-15s}" \
-  --timeout "${RCLONE_TIMEOUT:-5m}" \
-  --workdir "${WORKDIR}" --resilient --recover --max-lock 5m \
-  --max-delete "${RCLONE_MAX_DELETE:-50}" \
-  --conflict-resolve path1 --conflict-loser delete \
-  --log-level INFO --use-json-log --log-file "${LOG_JSON}"
+run_bisync "${LOG_JSON}" "${BISYNC_INIT_FLAGS[@]}"
 RC=$?
 set -e
+
+if needs_resync_recovery "${LOG_JSON}"; then
+  RECOVERY_LOG_JSON="$LOG_DIR/bisync-${INSTANCE}-${TS}-resync.json"
+  "$TG_SEND" "⚠️ Bi-Sync-Recovery (${INSTANCE}): rclone meldet fehlende Bisync-Listings. Starte einmalig --resync --resync-mode path1; Remote ${REMOTE}: ist maßgeblich." || true
+  set +e
+  run_bisync "${RECOVERY_LOG_JSON}" --resync --resync-mode path1
+  RC=$?
+  set -e
+  LOG_JSON="${RECOVERY_LOG_JSON}"
+fi
 
 # Fehler extrahieren: Zeit | Objekt(Datei) | Meldung
 jq -r 'select(.level=="error") | [.time, (.object//"-"), .msg] | @tsv' "${LOG_JSON}" > "${ERR_TSV}" 2>/dev/null || true
