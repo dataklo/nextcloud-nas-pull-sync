@@ -76,6 +76,20 @@ if ! compgen -G "${WORKDIR}/*.lst" >/dev/null; then
   BISYNC_INIT_FLAGS=(--resync --resync-mode path1)
 fi
 
+needs_resync_recovery() {
+  local log_file="$1"
+
+  if [[ ! -s "$log_file" ]]; then
+    return 1
+  fi
+
+  if jq -e 'select(.msg? | test("Must run --resync to recover|cannot find prior Path1 or Path2 listings"))' "$log_file" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  grep -Eq 'Must run --resync to recover|cannot find prior Path1 or Path2 listings' "$log_file"
+}
+
 run_bisync() {
   local log_file="$1"
   shift
@@ -101,7 +115,7 @@ run_bisync "${LOG}" "${BISYNC_INIT_FLAGS[@]}"
 RC=$?
 set -e
 
-if [[ $RC -ne 0 ]] && grep -q 'Must run --resync to recover\|cannot find prior Path1 or Path2 listings' "${LOG}"; then
+if needs_resync_recovery "${LOG}"; then
   RECOVERY_LOG="/var/log/nc-sync/bisync-${INSTANCE}-${TS}-resync.json"
   "$TG_SEND" "⚠️ Bi-Sync-Recovery (${INSTANCE}): rclone meldet fehlende Bisync-Listings. Starte einmalig --resync --resync-mode path1; Remote ${REMOTE}: ist maßgeblich." || true
   set +e
