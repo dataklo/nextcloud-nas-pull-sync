@@ -116,37 +116,3 @@ Hier kannst du Intervalle/Thresholds ändern:
 
 ### `Bisync aborted. Must run --resync to recover.`
 
-Wenn rclone meldet, dass frühere Path-Listings fehlen, startet `nc_pull` automatisch genau einen Recovery-Lauf mit:
-
-```bash
-rclone bisync <remote>: <zielpfad> --resync --resync-mode path1
-```
-
-Dabei ist die Cloud als `path1` maßgeblich. Du kannst den Lauf bei Bedarf auch manuell für eine Instanz anstoßen:
-
-```bash
-sudo systemctl start nc-pull@<instance>.service
-journalctl -u nc-pull@<instance>.service -n 100 --no-pager
-```
-
-Beispiel für `<instance>`: `oc-sync-1` aus `/etc/nc-sync/accounts.conf`.
-
-## Update / Uninstall
-
-```bash
-sudo ./update.sh
-sudo ./uninstall.sh
-```
-
-`update.sh` überschreibt **nur** Scripts/Units, nicht deine Configs in `/etc/nc-sync`.
-
-## Sicherheitshinweise
-
-- `rclone bisync` synchronisiert Änderungen und Löschungen in beide Richtungen. Schutz:
-  - `--max-delete` (Default 50 %)
-  - Beim ersten Lauf pro Instanz wird automatisch `--resync --resync-mode path1` verwendet; weil die Cloud als Path1 läuft, ist die Remote-Version dabei maßgeblich.
-- Bei Konflikten nutzt der Job `--conflict-resolve path1 --conflict-loser delete`; dadurch gewinnt die Remote-Version.
-
-## Lizenz
-
-MIT
